@@ -1,0 +1,88 @@
+name: Update golang-dist mirror
+author: Arthur Zamarin
+description: Fetch new upstream tags for a mirror and trigger golang vendor dist builds for them
+inputs:
+  tag-filter:
+    description: Bash pattern used to filter processed tags (matched against tag name, without "refs/tags/")
+    default: "*"
+  upstream-repo:
+    description: URL to fetch upstream repository from (the default is to query GitHub)
+  token:
+    description: GitHub token to use for pushing tags (requires contents:write, workflows:write, metadata:read)
+runs:
+  using: composite
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        token: ${{ inputs.token }}
+
+    - name: Add upstream remote (according to GitHub parent)
+      if: ${{ inputs.upstream-repo == '' }}
+      env:
+        GH_TOKEN: ${{ github.token }}
+      shell: bash
+      run: |
+        git remote add upstream $(gh repo view ${{ github.repository }} --json parent --template 'https://github.com/{{.parent.owner.login}}/{{.parent.name}}')
+    - name: Add upstream remote (explicitly specified)
+      if: ${{ inputs.upstream-repo != '' }}
+      shell: bash
+      run: |
+        git remote add upstream ${{ inputs.upstream-repo }}
+
+    - name: Fetch upstream tags
+      shell: bash
+      run: git ls-remote --sort=refname --refs --tags upstream | awk '{ print $2 }' > upstream-tags.txt
+
+    - name: Fetch our tags
+      shell: bash
+      run: git ls-remote --sort=refname --refs --tags | awk '{ print $2 }' > our-tags.txt
+
+    - name: Configure git for committing
+      shell: bash
+      run: |
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git config --global user.name gentoo-golang-dist
+        git config --global advice.detachedHead false
+
+    - name: Push new tags
+      shell: bash
+      run: |
+        WORKFLOW="
+        name: Create golang vendor dist
+        on:
+          push:
+            tags:
+              - '**'
+
+        jobs:
+          golang-dist:
+            runs-on: ubuntu-latest
+            permissions:
+              contents: write
+            steps:
+              - name: Create golang dist
+                uses: projg2/golang-dist-action@v1
+                with:
+                  dist-filename: ${{ github.event.repository.name }}-@TAG@-deps.tar.xz
+        "
+        while read tag; do
+          echo "::group::Processing ${tag}"
+          git fetch upstream "${tag}" || exit 1
+          tag_name=${tag#refs/tags/}
+          if [[ ${tag_name} == ${{ inputs.tag-filter }} ]]; then
+            tag_name=${tag_name//\//-}
+            tag_name=${tag_name#${{ github.event.repository.name }}-}
+            if [[ ${tag_name} == v[0-9]* ]]; then
+              tag_name=${tag_name#v}
+            fi
+            git checkout FETCH_HEAD &&
+            git rm -rf --ignore-unmatch .github/workflows &&
+            mkdir -p .github/workflows &&
+            echo "${WORKFLOW/@TAG@/${tag_name}}" > .github/workflows/golang-dist.yml &&
+            git add .github/workflows/golang-dist.yml &&
+            git commit -m "Replace workflows" || exit 1
+          fi
+          git push origin HEAD:${tag} || exit 1
+          echo "::endgroup::"
+        done < <(comm -13 our-tags.txt upstream-tags.txt)
