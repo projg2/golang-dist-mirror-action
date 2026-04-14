@@ -86,7 +86,7 @@ runs:
             mkdir -p .github/workflows &&
             WORKFLOW=${WORKFLOW//@VTAG@/${vtag}} &&
             echo "${WORKFLOW//@TAG@/${tag_name}}" > .github/workflows/golang-dist.yml &&
-            git add .github/workflows/golang-dist.yml &&
+            git add -f .github/workflows/golang-dist.yml &&
             git commit -m "Replace workflows" || exit 1
           fi
           git push origin HEAD:${tag} || exit 1
